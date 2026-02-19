@@ -1,0 +1,36 @@
+{
+  "name": "facebook-autopost-skill",
+  "version": "1.0.0",
+  "description": "Cross-post content from Telegram groups to Facebook Page with intelligent scheduling",
+  "settings": {
+    "facebook": {
+      "page_id": "${FACEBOOK_PAGE_ID}",
+      "access_token": "${FACEBOOK_ACCESS_TOKEN}",
+      "api_version": "v18.0"
+    },
+    "telegram": {
+      "bot_token": "${TELEGRAM_BOT_TOKEN}"
+    },
+    "telegram_sources": [
+      "your-telegram-group-name",
+      "-1001234567890"
+    ],
+    "schedule": {
+      "posts_per_day": 2,
+      "post_times": ["09:00", "18:00"],
+      "timezone": "Asia/Bangkok",
+      "rate_limit_seconds": 60
+    },
+    "content_filter": {
+      "min_text_length": 10,
+      "allowed_media_types": ["text", "image"],
+      "skip_patterns": ["#skip", "#draft"]
+    },
+    "features": {
+      "dry_run": false,
+      "duplicate_detection": true,
+      "rate_limiting": true,
+      "health_check": true
+    }
+  }
+}

@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Configuration with sensitive data
+config.json
+.env
+
+# Generated files
+queue.json
+posts.log
+*.log
+
+# Temporary files
+temp/*
+!temp/.gitkeep
+
+# Log files
+logs/*.log
+logs/error.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+coverage/
+.nyc_output/

@@ -1,0 +1,43 @@
+{
+  "name": "facebook-autopost-skill",
+  "version": "1.0.0",
+  "description": "Your Telegram content, automatically on Facebook. Schedule posts, handle images, zero manual work.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node telegram-webhook.js test",
+    "process": "node index.js process",
+    "status": "node index.js status",
+    "validate": "node index.js validate",
+    "health": "node index.js health"
+  },
+  "keywords": [
+    "facebook",
+    "telegram",
+    "automation",
+    "social-media",
+    "openclaw",
+    "scheduler",
+    "cross-post",
+    "auto-post",
+    "facebook-api",
+    "telegram-bot",
+    "content-scheduler",
+    "dry-run",
+    "rate-limiting",
+    "duplicate-detection"
+  ],
+  "author": "chatgptonmarketing <chatgptonmarketing@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chatgptonmarketing/facebook-autopost-skill.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chatgptonmarketing/facebook-autopost-skill/issues"
+  },
+  "homepage": "https://github.com/chatgptonmarketing/facebook-autopost-skill#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
