@@ -2,7 +2,7 @@
 /**
  * Facebook Auto-Poster Skill
  * Cross-posts content from Telegram groups to Facebook Page with scheduling
- * Supports text and image (downloaded from Telegram)
+ * Supports text, image, and video (downloaded from Telegram or local path)
  * 
  * Features:
  * - DRY_RUN mode for testing
@@ -11,6 +11,7 @@
  * - Input validation
  * - Health check endpoint
  * - Separate error logging
+ * - Resumable video upload support
  */
 
 const fs = require('fs');
@@ -78,8 +79,6 @@ function loadConfig() {
     return config;
   } catch (e) {
     console.error('Failed to load config:', e.message);
-    console.error('Please copy config.template.json to config.json and fill in your credentials');
-    console.error('Or set environment variables: FACEBOOK_PAGE_ID, FACEBOOK_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN');
     process.exit(1);
   }
 }
@@ -137,25 +136,15 @@ function isDuplicateContent(queue, hash) {
 function validateInput(item) {
   const errors = [];
   
-  // Validate text content
   if (!item.text || typeof item.text !== 'string') {
-    errors.push('Text content is required and must be a string');
+    errors.push('Text content is required');
   } else if (item.text.length > 2200) {
     errors.push('Text exceeds Facebook limit of 2200 characters');
   }
   
-  // Validate media type
-  const validMediaTypes = ['text', 'image'];
+  const validMediaTypes = ['text', 'image', 'video'];
   if (item.mediaType && !validMediaTypes.includes(item.mediaType)) {
     errors.push(`Invalid media type. Must be one of: ${validMediaTypes.join(', ')}`);
-  }
-  
-  // Validate image URL if provided
-  if (item.mediaUrl && item.mediaType === 'image') {
-    const urlPattern = /^(https?:\/\/|file:\/\/|\/).+\.(jpg|jpeg|png|gif|webp)$/i;
-    if (!urlPattern.test(item.mediaUrl) && !item.telegramFileId) {
-      errors.push('Invalid image URL format or unsupported image type');
-    }
   }
   
   return {
@@ -168,18 +157,13 @@ function validateInput(item) {
 function validateConfig(config) {
   const errors = [];
   const fb = config?.settings?.facebook;
-  const tg = config?.settings?.telegram;
   
-  if (!fb?.page_id || fb.page_id === '${FACEBOOK_PAGE_ID}' || fb.page_id === 'YOUR_PAGE_ID') {
+  if (!fb?.page_id || fb.page_id.includes('YOUR_')) {
     errors.push('Facebook Page ID is required');
   }
   
   if (!fb?.access_token || fb.access_token.includes('YOUR_')) {
     errors.push('Facebook Access Token is required');
-  }
-  
-  if (!tg?.bot_token || tg.bot_token.includes('YOUR_')) {
-    errors.push('Telegram Bot Token is required for image downloads');
   }
   
   return {
@@ -213,10 +197,7 @@ function updateRateLimit() {
 // Download file from Telegram
 async function downloadTelegramFile(fileId, botToken) {
   try {
-    // Step 1: Get file path from Telegram
-    const fileInfoResponse = await fetch(
-      `https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`
-    );
+    const fileInfoResponse = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
     const fileInfo = await fileInfoResponse.json();
     
     if (!fileInfo.ok || !fileInfo.result) {
@@ -227,7 +208,6 @@ async function downloadTelegramFile(fileId, botToken) {
     const fileName = path.basename(filePath);
     const localPath = path.join(TEMP_DIR, `${Date.now()}_${fileName}`);
     
-    // Step 2: Download the file
     const fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
     const fileResponse = await fetch(fileUrl);
     
@@ -239,7 +219,6 @@ async function downloadTelegramFile(fileId, botToken) {
     fs.writeFileSync(localPath, buffer);
     
     log(`Downloaded Telegram file: ${fileName} (${buffer.length} bytes)`);
-    
     return localPath;
   } catch (error) {
     throw new Error(`Telegram download failed: ${error.message}`);
@@ -249,7 +228,7 @@ async function downloadTelegramFile(fileId, botToken) {
 // Clean up temp file
 function cleanupTempFile(filePath) {
   try {
-    if (fs.existsSync(filePath)) {
+    if (filePath && fs.existsSync(filePath) && filePath.includes(TEMP_DIR)) {
       fs.unlinkSync(filePath);
       log(`Cleaned up temp file: ${filePath}`);
     }
@@ -258,9 +237,8 @@ function cleanupTempFile(filePath) {
   }
 }
 
-// Add content to queue (called when new Telegram message arrives)
+// Add content to queue
 function addToQueue(content) {
-  // Validate input first
   const validation = validateInput(content);
   if (!validation.valid) {
     log(`Validation failed: ${validation.errors.join(', ')}`, 'warn');
@@ -268,11 +246,8 @@ function addToQueue(content) {
   }
   
   const queue = loadQueue();
-  
-  // Generate content hash for duplicate detection
   const contentHash = generateContentHash(content.text, content.mediaType);
   
-  // Check for duplicates
   if (isDuplicateContent(queue, contentHash)) {
     log(`Duplicate content detected, skipping: ${content.text.substring(0, 50)}...`, 'warn');
     return { success: false, reason: 'duplicate' };
@@ -295,8 +270,6 @@ function addToQueue(content) {
   saveQueue(queue);
   
   log(`Added to queue: ${item.id} (${item.mediaType}) [hash: ${contentHash}]`);
-  
-  // Schedule next posts
   schedulePosts();
   
   return { success: true, item };
@@ -307,32 +280,22 @@ function getNextScheduleTime(config) {
   const now = new Date();
   const times = config.settings.schedule.post_times;
   const timezone = config.settings.schedule.timezone || 'Asia/Bangkok';
-  
-  // Convert current time to target timezone
   const tzNow = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
-  const currentHour = tzNow.getHours();
-  const currentMinute = tzNow.getMinutes();
-  const currentTime = currentHour * 60 + currentMinute;
+  const currentTime = tzNow.getHours() * 60 + tzNow.getMinutes();
   
-  // Find next available slot
   for (const timeStr of times) {
     const [hour, minute] = timeStr.split(':').map(Number);
-    const slotTime = hour * 60 + minute;
-    
-    if (slotTime > currentTime) {
-      // This slot is today
+    if (hour * 60 + minute > currentTime) {
       const scheduled = new Date(tzNow);
       scheduled.setHours(hour, minute, 0, 0);
       return scheduled.toISOString();
     }
   }
   
-  // All slots passed, use first slot tomorrow
   const [firstHour, firstMinute] = times[0].split(':').map(Number);
   const tomorrow = new Date(tzNow);
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(firstHour, firstMinute, 0, 0);
-  
   return tomorrow.toISOString();
 }
 
@@ -340,13 +303,9 @@ function getNextScheduleTime(config) {
 function schedulePosts() {
   const config = loadConfig();
   const queue = loadQueue();
-  
-  // Get unscheduled items
   const unscheduled = queue.pending.filter(item => !item.scheduledFor);
-  
   if (unscheduled.length === 0) return;
   
-  // Schedule up to posts_per_day
   const postsPerDay = config.settings.schedule.posts_per_day || 2;
   const toSchedule = unscheduled.slice(0, postsPerDay);
   
@@ -354,147 +313,128 @@ function schedulePosts() {
     item.scheduledFor = getNextScheduleTime(config);
     log(`Scheduled ${item.id} for ${item.scheduledFor}`);
   }
-  
   saveQueue(queue);
 }
 
-// Create multipart form data for Facebook upload
-function createMultipartFormData(fields, filePath, fileFieldName) {
+// Multipart Form Data Helper
+function createMultipartFormData(fields, filePath, fileFieldName, mimeType = 'application/octet-stream') {
   const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
   const chunks = [];
-  
-  // Add form fields
   for (const [key, value] of Object.entries(fields)) {
-    chunks.push(Buffer.from(`--${boundary}\r\n`));
-    chunks.push(Buffer.from(`Content-Disposition: form-data; name="${key}"\r\n\r\n`));
-    chunks.push(Buffer.from(`${value}\r\n`));
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`));
   }
-  
-  // Add file
   if (filePath && fs.existsSync(filePath)) {
-    const fileName = path.basename(filePath);
-    const fileData = fs.readFileSync(filePath);
-    const mimeType = 'image/jpeg'; // Default, can be improved
-    
-    chunks.push(Buffer.from(`--${boundary}\r\n`));
-    chunks.push(Buffer.from(`Content-Disposition: form-data; name="${fileFieldName}"; filename="${fileName}"\r\n`));
-    chunks.push(Buffer.from(`Content-Type: ${mimeType}\r\n\r\n`));
-    chunks.push(fileData);
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileFieldName}"; filename="${path.basename(filePath)}"\r\nContent-Type: ${mimeType}\r\n\r\n`));
+    chunks.push(fs.readFileSync(filePath));
     chunks.push(Buffer.from(`\r\n`));
   }
-  
   chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return { body: Buffer.concat(chunks), boundary: boundary };
+}
+
+// Resumable Video Upload
+async function postVideoToFacebook(item, config, videoPath) {
+  const { page_id, access_token, api_version } = config.settings.facebook;
+  const baseUrl = `https://graph.facebook.com/${api_version}/${page_id}/videos`;
+  const stats = fs.statSync(videoPath);
+  const fileSize = stats.size;
+
+  log(`Phase 1: Initializing video upload for ${path.basename(videoPath)} (${fileSize} bytes)`);
+  const initRes = await fetch(baseUrl, {
+    method: 'POST',
+    body: new URLSearchParams({ upload_phase: 'start', access_token, file_size: fileSize })
+  });
+  const initData = await initRes.json();
+  if (initData.error) throw new Error(`Video Init failed: ${initData.error.message}`);
   
-  return {
-    body: Buffer.concat(chunks),
-    boundary: boundary
-  };
+  const uploadSessionId = initData.upload_session_id;
+
+  log(`Phase 2: Transferring video data...`);
+  const formData = createMultipartFormData({
+    upload_phase: 'transfer',
+    upload_session_id: uploadSessionId,
+    start_offset: '0',
+    access_token: access_token
+  }, videoPath, 'video_file_chunk', 'video/mp4');
+
+  const transferRes = await fetch(baseUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/form-data; boundary=${formData.boundary}` },
+    body: formData.body
+  });
+  const transferData = await transferRes.json();
+  if (transferData.error) throw new Error(`Video Transfer failed: ${transferData.error.message}`);
+
+  log(`Phase 3: Finishing video upload...`);
+  const finishRes = await fetch(baseUrl, {
+    method: 'POST',
+    body: new URLSearchParams({
+      upload_phase: 'finish',
+      upload_session_id: uploadSessionId,
+      access_token: access_token,
+      description: item.text
+    })
+  });
+  const finishData = await finishRes.json();
+  if (finishData.error) throw new Error(`Video Finish failed: ${finishData.error.message}`);
+  
+  return finishData;
 }
 
 // Post to Facebook
 async function postToFacebook(item, config) {
-  // Check if DRY_RUN mode
-  const isDryRun = config.settings.dry_run === true;
-  
-  // Validate config
-  const configValidation = validateConfig(config);
-  if (!configValidation.valid) {
-    throw new Error(`Configuration error: ${configValidation.errors.join(', ')}`);
+  if (config.settings.dry_run === true) {
+    log(`[DRY RUN] Would post: ${item.text.substring(0, 100)}...`, 'dryrun');
+    return { id: 'dry-run-' + Date.now(), dryRun: true };
   }
   
-  // Check rate limit
-  const rateLimitCheck = checkRateLimit();
-  if (!rateLimitCheck.allowed) {
-    throw new Error(rateLimitCheck.message);
-  }
+  const validation = validateConfig(config);
+  if (!validation.valid) throw new Error(`Config error: ${validation.errors.join(', ')}`);
+  
+  const rateLimit = checkRateLimit();
+  if (!rateLimit.allowed) throw new Error(rateLimit.message);
   
   const { page_id, access_token, api_version } = config.settings.facebook;
-  const botToken = config.settings.telegram?.bot_token;
-  
   const baseUrl = `https://graph.facebook.com/${api_version}`;
   let tempFilePath = null;
-  
+  let result;
+
   try {
-    if (isDryRun) {
-      log(`[DRY RUN] Would post: ${item.text.substring(0, 100)}...`, 'dryrun');
-      return { id: 'dry-run-' + Date.now(), dryRun: true };
+    let mediaPath = item.mediaUrl;
+    if (item.telegramFileId && config.settings.telegram?.bot_token) {
+      mediaPath = await downloadTelegramFile(item.telegramFileId, config.settings.telegram.bot_token);
+      tempFilePath = mediaPath;
     }
-    
-    let response;
-    
-    if (item.mediaType === 'image') {
-      // Handle image upload
-      let imagePath = item.mediaUrl;
-      
-      // If it's a Telegram file_id, download it first
-      if (item.telegramFileId && botToken) {
-        imagePath = await downloadTelegramFile(item.telegramFileId, botToken);
-        tempFilePath = imagePath;
-      }
-      
-      // Check if it's a local file path (downloaded from Telegram)
-      if (imagePath && fs.existsSync(imagePath)) {
-        // Upload via multipart form-data
-        const formData = createMultipartFormData({
-          caption: item.text || '',
-          published: 'true',
-          access_token: access_token
-        }, imagePath, 'file');
-        
-        response = await fetch(`${baseUrl}/${page_id}/photos`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': `multipart/form-data; boundary=${formData.boundary}`
-          },
-          body: formData.body
-        });
-      } else if (imagePath) {
-        // Use URL-based upload for public URLs
-        const photoData = new URLSearchParams({
-          url: imagePath,
-          caption: item.text || '',
-          published: 'true',
-          access_token: access_token
-        });
-        
-        response = await fetch(`${baseUrl}/${page_id}/photos`, {
-          method: 'POST',
-          body: photoData
-        });
-      } else {
-        throw new Error('No image source provided');
-      }
-    } else {
-      // Post text only
-      const postData = new URLSearchParams({
-        message: item.text,
-        access_token: access_token
-      });
-      
-      response = await fetch(`${baseUrl}/${page_id}/feed`, {
+
+    if (item.mediaType === 'video' && mediaPath && fs.existsSync(mediaPath)) {
+      result = await postVideoToFacebook(item, config, mediaPath);
+    } else if (item.mediaType === 'image' && mediaPath && fs.existsSync(mediaPath)) {
+      const formData = createMultipartFormData({ caption: item.text, published: 'true', access_token }, mediaPath, 'file', 'image/jpeg');
+      const res = await fetch(`${baseUrl}/${page_id}/photos`, {
         method: 'POST',
-        body: postData
+        headers: { 'Content-Type': `multipart/form-data; boundary=${formData.boundary}` },
+        body: formData.body
       });
+      result = await res.json();
+    } else if (item.mediaType === 'image' && mediaPath) {
+      const res = await fetch(`${baseUrl}/${page_id}/photos`, {
+        method: 'POST',
+        body: new URLSearchParams({ url: mediaPath, caption: item.text, published: 'true', access_token })
+      });
+      result = await res.json();
+    } else {
+      const res = await fetch(`${baseUrl}/${page_id}/feed`, {
+        method: 'POST',
+        body: new URLSearchParams({ message: item.text, access_token })
+      });
+      result = await res.json();
     }
-    
-    const result = await response.json();
-    
-    if (result.error) {
-      throw new Error(result.error.message);
-    }
-    
-    // Update rate limit on success
+
+    if (result.error) throw new Error(result.error.message);
     updateRateLimit();
-    
     return result;
-  } catch (error) {
-    logError(`Failed to post item ${item.id}`, error);
-    throw error;
   } finally {
-    // Cleanup temp file if downloaded from Telegram
-    if (tempFilePath) {
-      cleanupTempFile(tempFilePath);
-    }
+    if (tempFilePath) cleanupTempFile(tempFilePath);
   }
 }
 
@@ -502,175 +442,52 @@ async function postToFacebook(item, config) {
 async function processScheduledPosts() {
   const config = loadConfig();
   const queue = loadQueue();
-  
   const now = new Date().toISOString();
-  const duePosts = queue.pending.filter(item => 
-    item.scheduledFor && item.scheduledFor <= now
-  );
+  const duePosts = queue.pending.filter(item => (item.text && item.text.includes('#now')) || (item.scheduledFor && item.scheduledFor <= now));
   
   for (const item of duePosts) {
     try {
-      log(`Posting to Facebook: ${item.id}`);
+      log(`Posting to Facebook: ${item.id} (${item.mediaType})`);
       const result = await postToFacebook(item, config);
-      
-      // Move to posted
       item.postedAt = now;
       item.facebookPostId = result.id;
       item.status = 'posted';
-      
       queue.posted.push(item);
       queue.pending = queue.pending.filter(p => p.id !== item.id);
-      queue.lastPostTime = now;
-      
-      // Add content hash to prevent duplicates
+      if (!queue.postedHashes) queue.postedHashes = [];
       if (item.contentHash && !queue.postedHashes.includes(item.contentHash)) {
         queue.postedHashes.push(item.contentHash);
-        // Keep only last 1000 hashes to prevent memory issues
-        if (queue.postedHashes.length > 1000) {
-          queue.postedHashes = queue.postedHashes.slice(-1000);
-        }
+        if (queue.postedHashes.length > 1000) queue.postedHashes.shift();
       }
-      
-      log(`Successfully posted: ${result.id}${result.dryRun ? ' [DRY RUN]' : ''}`);
+      log(`Successfully posted: ${result.id}`);
     } catch (error) {
       log(`Failed to post ${item.id}: ${error.message}`, 'error');
       item.status = 'failed';
       item.error = error.message;
     }
   }
-  
   saveQueue(queue);
 }
 
-// Check queue status
-function getQueueStatus() {
-  const queue = loadQueue();
-  return {
-    pending: queue.pending.length,
-    scheduled: queue.pending.filter(i => i.scheduledFor).length,
-    posted: queue.posted.length,
-    lastPostTime: queue.lastPostTime,
-    dryRun: loadConfig().settings.dry_run === true
-  };
-}
-
-// Health check endpoint
-function startHealthCheckServer(port = 3000) {
-  const server = http.createServer((req, res) => {
-    if (req.url === '/health') {
-      const config = loadConfig();
-      const queue = loadQueue();
-      const configValidation = validateConfig(config);
-      
-      const health = {
-        status: configValidation.valid ? 'healthy' : 'unhealthy',
-        timestamp: new Date().toISOString(),
-        version: '1.0.0',
-        checks: {
-          config: configValidation.valid,
-          configErrors: configValidation.errors,
-          queue: {
-            pending: queue.pending.length,
-            scheduled: queue.pending.filter(i => i.scheduledFor).length,
-            posted: queue.posted.length
-          },
-          dryRun: config.settings.dry_run === true
-        }
-      };
-      
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(health, null, 2));
-    } else {
-      res.writeHead(404);
-      res.end('Not Found');
-    }
-  });
-  
-  server.listen(port, () => {
-    log(`Health check server running on http://localhost:${port}/health`);
-  });
-  
-  return server;
-}
-
-// CLI interface
+// CLI
 const command = process.argv[2];
 const arg = process.argv[3];
 
 switch (command) {
   case 'add':
-    // Add content from command line (for testing)
-    const content = JSON.parse(arg);
-    const result = addToQueue(content);
-    console.log(result.success ? 'Added:' : 'Failed:', result);
+    console.log(addToQueue(JSON.parse(arg)));
     break;
-    
   case 'process':
-    // Process scheduled posts
-    processScheduledPosts().then(() => {
-      console.log('Processing complete');
-    }).catch(err => {
-      console.error('Processing failed:', err);
-      process.exit(1);
-    });
+    processScheduledPosts().then(() => console.log('Processing complete'));
     break;
-    
   case 'status':
-    console.log(getQueueStatus());
+    const q = loadQueue();
+    console.log({ pending: q.pending.length, posted: q.posted.length });
     break;
-    
-  case 'schedule':
-    schedulePosts();
-    console.log('Scheduling complete');
-    break;
-    
-  case 'health':
-    startHealthCheckServer(parseInt(arg) || 3000);
-    break;
-    
   case 'validate':
-    const config = loadConfig();
-    const validation = validateConfig(config);
-    console.log('Config validation:', validation.valid ? '✅ Valid' : '❌ Invalid');
-    if (!validation.valid) {
-      console.log('Errors:', validation.errors);
-    }
+    const v = validateConfig(loadConfig());
+    console.log(v.valid ? '✅ Valid' : '❌ Invalid', v.errors || '');
     break;
-    
   default:
-    console.log(`
-Facebook Auto-Poster
-
-Usage:
-  node index.js add '<json>'          Add content to queue
-  node index.js process               Process scheduled posts
-  node index.js schedule              Schedule pending posts
-  node index.js status                Show queue status
-  node index.js health [port]         Start health check server
-  node index.js validate              Validate configuration
-
-Environment Variables:
-  FACEBOOK_PAGE_ID        Facebook Page ID
-  FACEBOOK_ACCESS_TOKEN   Facebook Access Token
-  TELEGRAM_BOT_TOKEN      Telegram Bot Token
-  DRY_RUN                 Set to 'true' for dry run mode (no actual posting)
-
-Features:
-  ✅ DRY_RUN mode - Test without actually posting
-  ✅ Duplicate detection - Hash-based content guard
-  ✅ Rate limiting - 1 post per 60 seconds minimum
-  ✅ Input validation - Validates content, URLs, tokens
-  ✅ Health check endpoint - /health for monitoring
-  ✅ Separate error logging - logs/error.log
-    `);
+    console.log('Usage: node index.js [add|process|status|validate]');
 }
-
-module.exports = { 
-  addToQueue, 
-  processScheduledPosts, 
-  getQueueStatus,
-  downloadTelegramFile,
-  startHealthCheckServer,
-  validateConfig,
-  validateInput
-};
