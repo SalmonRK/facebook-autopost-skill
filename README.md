@@ -1,6 +1,6 @@
 # Facebook Auto-Poster Skill
 
-Your Telegram content, automatically on Facebook. Schedule posts, handle images, zero manual work.
+Your Telegram content, automatically on Facebook. Schedule posts, handle images, videos, zero manual work.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![OpenClaw Skill](https://img.shields.io/badge/OpenClaw-Skill-blue.svg)](https://openclaw.ai)
@@ -10,6 +10,7 @@ Your Telegram content, automatically on Facebook. Schedule posts, handle images,
 ### Core Features
 - ✅ **Auto-Schedule**: Customizable posting schedule (default: 2 posts/day at 09:00, 18:00)
 - ✅ **Image Support**: Automatically download and post images from Telegram
+- ✅ **Video Support**: **[NEW]** Resumable video upload support for high-quality video posts
 - ✅ **Queue Management**: Smart queue system prevents spam posting
 - ✅ **Thai Language**: Full Thai language support
 
@@ -48,7 +49,7 @@ openclaw skill install facebook-autopost-skill
 
 #### Option 2: Standalone Node.js Project
 ```bash
-git clone https://github.com/chatgptonmarketing/facebook-autopost-skill.git
+git clone https://github.com/SalmonRK/facebook-autopost-skill.git
 cd facebook-autopost-skill
 npm install
 ```
@@ -86,7 +87,7 @@ Or use `.env` file (see `.env.example`)
 #### Send content from Telegram:
 ```
 # Schedule for next slot (09:00 or 18:00)
-Just send text or image with caption
+Just send text, image, or video with caption
 
 # Post immediately
 Add #now to your message
@@ -103,8 +104,11 @@ node index.js status
 # Process scheduled posts
 node index.js process
 
-# Add content manually
+# Add content manually (Text)
 node index.js add '{"source":"manual","text":"Hello","mediaType":"text"}'
+
+# Add content manually (Video)
+node index.js add '{"source":"manual","text":"Check this video!","mediaType":"video","mediaUrl":"/path/to/video.mp4"}'
 
 # Validate configuration
 node index.js validate
@@ -166,7 +170,7 @@ Response:
 
 ```
 facebook-autopost-skill/
-├── index.js                 # Main logic
+├── index.js                 # Main logic (Now with Video Support!)
 ├── telegram-webhook.js      # Telegram webhook handler
 ├── telegram-integration.js  # Telegram message processor
 ├── auto-post-handler.sh     # Shell script handler
@@ -198,7 +202,7 @@ facebook-autopost-skill/
     },
     "content_filter": {
       "min_text_length": 10,
-      "allowed_media_types": ["text", "image"],
+      "allowed_media_types": ["text", "image", "video"],
       "skip_patterns": ["#skip", "#draft"]
     }
   }
@@ -222,7 +226,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👤 Author
 
-**chatgptonmarketing** - chatgptonmarketing@gmail.com
+**SalmonRK** - https://github.com/SalmonRK
 
 ## 🙏 Acknowledgments
 
